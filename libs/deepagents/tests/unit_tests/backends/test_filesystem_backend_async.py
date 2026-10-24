@@ -96,9 +96,10 @@ async def test_filesystem_backend_async_virtual_mode(tmp_path: Path):
     result_bracket = await be.agrep("[", path="/")
     assert result_bracket.matches is not None  # Should not error, returns empty list or matches
 
-    # path traversal blocked
-    with pytest.raises(ValueError, match="traversal"):
-        await be.aread("/../a.txt")
+    # path traversal blocked: reported as a structured error, consistent with
+    # the filesystem tools (which validate before calling the backend)
+    traversal = await be.aread("/../a.txt")
+    assert isinstance(traversal, ReadResult) and traversal.error is not None and "traversal" in traversal.error
 
 
 async def test_filesystem_backend_als_nested_directories(tmp_path: Path):

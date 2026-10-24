@@ -281,9 +281,10 @@ def test_local_shell_backend_virtual_mode_restrictions() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         backend = LocalShellBackend(root_dir=tmpdir, virtual_mode=True)
 
-        # Filesystem operations should be restricted
-        with pytest.raises(ValueError, match="Path traversal not allowed"):
-            backend.read("/../etc/passwd")
+        # Filesystem operations should be restricted: traversal is reported as
+        # a structured error rather than raising (issue #7167)
+        restricted = backend.read("/../etc/passwd")
+        assert restricted.error is not None and "traversal" in restricted.error
 
         # But shell commands are NOT restricted (by design)
         result = backend.execute("cat /etc/passwd")

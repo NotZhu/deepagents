@@ -46,6 +46,7 @@ from deepagents.backends.utils import (
     compile_grep_include_glob,
     perform_string_replacement,
     slice_read_response,
+    validate_path,
 )
 
 logger = logging.getLogger(__name__)
@@ -186,8 +187,15 @@ class FilesystemBackend(BackendProtocol):
         `self.cwd`, disallow traversal (`..`, `~`) and ensure resolved path stays within
         root.
 
+        Validation and normalization are delegated to `validate_path`, the same
+        function the filesystem tools run, so direct calls and tool-mediated calls
+        agree on which keys are legal and how they normalize. Component-level
+        traversal checking keeps legitimate filenames such as `foo..bar.txt`
+        usable, while genuine traversal segments, `~`-prefixed paths, and Windows
+        absolute paths are rejected.
+
         When `virtual_mode=False`, preserve legacy behavior: absolute paths are allowed
-        as-is; relative paths resolve under cwd.
+        as-is; relative paths are resolved under cwd.
 
         Args:
             key: File path (absolute, relative, or virtual when `virtual_mode=True`).
@@ -201,11 +209,8 @@ class FilesystemBackend(BackendProtocol):
             OSError: If the path is a symlink loop (`ELOOP`).
         """
         if self.virtual_mode:
-            vpath = key if key.startswith("/") else "/" + key
-            if ".." in vpath or vpath.startswith("~"):
-                msg = "Path traversal not allowed"
-                raise ValueError(msg)
-            full = (self.cwd / vpath.lstrip("/")).resolve()
+            normalized = validate_path(key)
+            full = (self.cwd / normalized.lstrip("/")).resolve()
             try:
                 full.relative_to(self.cwd)
             except ValueError:
@@ -308,7 +313,7 @@ class FilesystemBackend(BackendProtocol):
                 return LsResult(error=f"Path '{path}': path_not_found", entries=None)
             if not dir_path.is_dir():
                 return LsResult(error=f"Path '{path}': not_a_directory", entries=None)
-        except (OSError, RuntimeError) as e:
+        except (ValueError, OSError, RuntimeError) as e:
             msg = f"Cannot list '{path}': {e}"
             logger.warning("%s", msg)
             return LsResult(error=msg, entries=None)
@@ -458,7 +463,7 @@ class FilesystemBackend(BackendProtocol):
         """
         try:
             resolved_path = self._resolve_path(file_path)
-        except (OSError, RuntimeError) as e:
+        except (ValueError, OSError, RuntimeError) as e:
             return ReadResult(error=f"Error reading file '{file_path}': {e}")
 
         try:
@@ -516,7 +521,7 @@ class FilesystemBackend(BackendProtocol):
         """
         try:
             resolved_path = self._resolve_path(file_path)
-        except (OSError, RuntimeError) as e:
+        except (ValueError, OSError, RuntimeError) as e:
             return WriteResult(error=f"Error writing file '{file_path}': {e}")
 
         try:
@@ -559,7 +564,7 @@ class FilesystemBackend(BackendProtocol):
         """
         try:
             resolved_path = self._resolve_path(file_path)
-        except (OSError, RuntimeError) as e:
+        except (ValueError, OSError, RuntimeError) as e:
             return EditResult(error=f"Error editing file '{file_path}': {e}")
 
         try:
@@ -617,7 +622,7 @@ class FilesystemBackend(BackendProtocol):
         """
         try:
             resolved_path = self._resolve_path(file_path)
-        except (OSError, RuntimeError) as e:
+        except (ValueError, OSError, RuntimeError) as e:
             return DeleteResult(error=f"Error deleting '{file_path}': {e}")
 
         try:
@@ -1359,7 +1364,7 @@ class FilesystemBackend(BackendProtocol):
             search_path = self.cwd if path is None or path == "/" else self._resolve_path(path)
             if not search_path.exists() or not search_path.is_dir():
                 return GlobResult(matches=[])
-        except (OSError, RuntimeError) as e:
+        except (ValueError, OSError, RuntimeError) as e:
             display_path = path if path is not None else "<default>"
             return GlobResult(error=f"Error globbing path '{display_path}': {e}", matches=[])
 

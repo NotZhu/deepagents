@@ -187,9 +187,10 @@ def test_filesystem_backend_virtual_mode(tmp_path: Path, monkeypatch: pytest.Mon
     result_bracket = be.grep("[", path="/")
     assert result_bracket.matches is not None  # Should not error, returns empty list or matches
 
-    # path traversal blocked
-    with pytest.raises(ValueError, match="traversal"):
-        be.read("/../a.txt")
+    # path traversal blocked: reported as a structured error, consistent with
+    # the filesystem tools (which validate before calling the backend)
+    traversal = be.read("/../a.txt")
+    assert isinstance(traversal, ReadResult) and traversal.error is not None and "traversal" in traversal.error
 
 
 def test_filesystem_backend_ls_nested_directories(tmp_path: Path):
@@ -2770,6 +2771,6 @@ class TestRealPath:
             (tmp_path / "link").symlink_to(tmp_path / "secrets", target_is_directory=True)
         except (NotImplementedError, OSError):
             pytest.skip("platform does not support symlinks")
-        real_path = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)._real_path
+        real_path = FilesystemBackend(root_dir=tmp_path, virtual_mode=False)._real_path
         expected = Path(os.path.realpath(tmp_path / "secrets" / "key.txt"))
         assert real_path(str(tmp_path / "link" / "key.txt")) == "/" + expected.relative_to(expected.anchor).as_posix()
