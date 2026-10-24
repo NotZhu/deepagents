@@ -18,7 +18,7 @@ from langchain_core.messages import ToolMessage
 from deepagents.backends import filesystem as fs_module
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import DeleteResult, EditResult, GrepMatch, ReadResult, WriteResult
-from deepagents.backends.utils import format_grep_matches
+from deepagents.backends.utils import format_grep_matches, validate_path
 from deepagents.middleware.filesystem import GLOB_TIMEOUT, FilesystemMiddleware
 
 
@@ -2774,3 +2774,70 @@ class TestRealPath:
         real_path = FilesystemBackend(root_dir=tmp_path, virtual_mode=False)._real_path
         expected = Path(os.path.realpath(tmp_path / "secrets" / "key.txt"))
         assert real_path(str(tmp_path / "link" / "key.txt")) == "/" + expected.relative_to(expected.anchor).as_posix()
+
+
+class TestPathValidationConsistency:
+    """Direct `FilesystemBackend` calls validate paths like the filesystem tools do.
+
+    The tools normalize and validate keys with `validate_path` before touching
+    the backend; direct calls used to skip that layer, so the same key could be
+    accepted by one entry point and rejected (or resolved differently) by the
+    other.
+    """
+
+    def test_dotdot_filename_roundtrips_through_both_entry_points(self, tmp_path: Path) -> None:
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+        # `foo../bar.txt` needs a directory literally named `foo..`; Win32
+        # strips trailing dots from path components, so the OS cannot back
+        # that name. Validation still accepts it everywhere.
+        keys = ["foo..bar.txt"]
+        if sys.platform != "win32":
+            keys.append("foo../bar.txt")
+        for key in keys:
+            write_result = backend.write(key, "content")
+            assert isinstance(write_result, WriteResult) and write_result.error is None
+            for result in (backend.read(key), backend.read(validate_path(key))):
+                assert isinstance(result, ReadResult) and result.error is None
+                assert result.file_data is not None and result.file_data["content"] == "content"
+
+    def test_dotdot_component_still_rejected(self, tmp_path: Path) -> None:
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+        for key in ("/../a.txt", "foo/../bar", "../../secret.txt"):
+            read_result = backend.read(key)
+            assert isinstance(read_result, ReadResult) and read_result.error is not None and "traversal" in read_result.error
+            with pytest.raises(ValueError, match="traversal"):
+                validate_path(key)
+
+    def test_windows_absolute_path_rejected_consistently(self, tmp_path: Path) -> None:
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+        for key in ("C:/secret.txt", "C:\\secret.txt"):
+            read_result = backend.read(key)
+            assert isinstance(read_result, ReadResult) and read_result.error is not None and "Windows absolute" in read_result.error
+            with pytest.raises(ValueError, match="Windows absolute paths"):
+                validate_path(key)
+
+    def test_backslash_separator_normalized_consistently(self, tmp_path: Path) -> None:
+        write_file(tmp_path / "sub" / "notes.txt", "content")
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+        for result in (backend.read("sub\\notes.txt"), backend.read(validate_path("sub\\notes.txt"))):
+            assert isinstance(result, ReadResult) and result.error is None
+            assert result.file_data is not None and result.file_data["content"] == "content"
+
+    def test_tilde_path_rejected_on_direct_call(self, tmp_path: Path) -> None:
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+        read_result = backend.read("~/secret.txt")
+        assert isinstance(read_result, ReadResult) and read_result.error is not None and "traversal" in read_result.error
+
+    @pytest.mark.parametrize("operation", ["read", "write", "edit", "delete", "ls", "glob"])
+    def test_traversal_returns_error_result_for_entry_points(self, tmp_path: Path, operation: str) -> None:
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+        result = {
+            "read": lambda: backend.read("../../secret.txt"),
+            "write": lambda: backend.write("../../secret.txt", "x"),
+            "edit": lambda: backend.edit("../../secret.txt", "a", "b"),
+            "delete": lambda: backend.delete("../../secret.txt"),
+            "ls": lambda: backend.ls("../../secret"),
+            "glob": lambda: backend.glob("*", path="../../secret"),
+        }[operation]()
+        error = getattr(result, "error", None)
+        assert error is not None and "traversal" in error
