@@ -2841,3 +2841,10 @@ class TestPathValidationConsistency:
         }[operation]()
         error = getattr(result, "error", None)
         assert error is not None and "traversal" in error
+
+    def test_grep_invalid_path_is_an_error_not_an_empty_search(self, tmp_path: Path) -> None:
+        """An invalid `path` must not look like a successful search with no matches."""
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+        result = backend.grep("needle", path="../../dummy.txt")
+        assert result.matches == []
+        assert result.error is not None and "traversal" in result.error

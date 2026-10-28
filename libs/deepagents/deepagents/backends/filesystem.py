@@ -689,8 +689,9 @@ class FilesystemBackend(BackendProtocol):
         # Resolve base path
         try:
             base_full = self._resolve_path(path or ".")
-        except ValueError:
-            return GrepResult(matches=[])
+        except ValueError as e:
+            search_path = path or "."
+            return GrepResult(error=f"Error searching path '{search_path}': {e}", matches=[])
         except (OSError, RuntimeError) as e:
             search_path = path or "."
             return GrepResult(error=f"Error searching path '{search_path}': {e}", matches=[])
